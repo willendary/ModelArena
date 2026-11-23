@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -302,6 +302,22 @@ def clear_history(db: Session = Depends(get_db)):
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if (_FRONTEND_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="frontend-assets")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def serve_favicon_svg():
+    icon_file = _FRONTEND_DIST / "favicon.svg"
+    if icon_file.is_file():
+        return FileResponse(str(icon_file), media_type="image/svg+xml")
+    return Response(status_code=204)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def serve_favicon_ico():
+    icon_file = _FRONTEND_DIST / "favicon.svg"
+    if icon_file.is_file():
+        return FileResponse(str(icon_file), media_type="image/svg+xml")
+    return Response(status_code=204)
 
 
 @app.get("/", include_in_schema=False)

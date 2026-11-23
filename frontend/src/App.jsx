@@ -91,7 +91,7 @@ export function App() {
         api.history({ limit: 150 }),
         api.listJobs(15),
         api.getSchedule(),
-        api.frontierComparison(),
+        api.frontierComparison().catch(() => null),
       ])
       setRanking(rk.data || [])
       setRecommendation(rec)

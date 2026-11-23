@@ -17,7 +17,11 @@ export function FrontierComparison({ data }) {
   if (!data) {
     return (
       <section className="panel">
-        <p className="empty">Carregando comparativo de referência com modelos de ponta...</p>
+        <h2>Comparativo vs. Modelos de Ponta</h2>
+        <p className="empty">
+          O servidor em execução ainda está numa versão anterior à v1.2.0 (sem o endpoint <code>/api/frontier-comparison</code>).
+          Assim que seu benchmark atual terminar, reinicie <code>.\scripts\start-modelarena.ps1</code> (seus resultados salvos continuam intactos) e atualize a página!
+        </p>
       </section>
     )
   }
