@@ -1,0 +1,50 @@
+{
+  "name": "model-arena",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Model Arena — benchmark real de modelos NVIDIA NIM com avaliação executável de código, ranking atualizado e agendamento automático dentro do OpenChamber.",
+  "type": "module",
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.0.0"
+    },
+    "contributes": {
+      "panel": {
+        "id": "model-arena",
+        "name": "Model Arena",
+        "icon": "icon.svg",
+        "entry": "panel/index.html"
+      },
+      "page": true,
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "schedule": [
+          {
+            "id": "arena-tick",
+            "cron": "0 * * * *"
+          }
+        ]
+      }
+    }
+  },
+  "scripts": {
+    "build:panel": "esbuild extension/panel/main.ts --bundle --format=iife --platform=browser --target=es2020 --charset=utf8 --minify --outfile=panel/main.js",
+    "build:service": "esbuild extension/service/main.ts --bundle --format=cjs --platform=node --target=node20 --charset=utf8 --minify --outfile=service/main.js",
+    "build": "npm run build:panel && npm run build:service",
+    "typecheck": "tsc --noEmit -p tsconfig.extension.json",
+    "test": "esbuild extension/tests/service.test.ts --bundle --platform=node --format=cjs --target=node20 --outfile=.test-build.cjs && node --test .test-build.cjs",
+    "check:manifest": "node scripts/check-openchamber-extension.mjs",
+    "pack:extension": "npm run build && node scripts/pack-extension.mjs",
+    "check": "npm run typecheck && npm run build && npm run test && npm run check:manifest"
+  },
+  "dependencies": {
+    "@openchamber/sdk": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

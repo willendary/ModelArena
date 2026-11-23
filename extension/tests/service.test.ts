@@ -1,0 +1,107 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SERVICE_SCHEDULE_PATH, SERVICE_SCHEDULE_WIRE_VERSION } from '@openchamber/sdk';
+import { createArenaService, normalizeBackendUrl } from '../service/server';
+
+test('normalizeBackendUrl accepts valid http/https URLs and rejects invalid protocols', () => {
+  assert.equal(normalizeBackendUrl('http://127.0.0.1:8765/'), 'http://127.0.0.1:8765');
+  assert.equal(normalizeBackendUrl('https://arena.local/sub/'), 'https://arena.local/sub');
+  assert.equal(normalizeBackendUrl('file:///etc/passwd'), null);
+  assert.equal(normalizeBackendUrl('not-a-url'), null);
+});
+
+test('OpenChamber guest service enforces bearer auth, proxies backend API, persists config, and handles /schedule', async () => {
+  const ticks: string[] = [];
+  const upstream = createServer((req, res) => {
+    if (req.url === '/api/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', nvidia_configured: true }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/schedule/tick') {
+      ticks.push('tick');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ triggered: true }));
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ detail: 'not found' }));
+  });
+
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upAddr = upstream.address();
+  assert(upAddr && typeof upAddr === 'object');
+  const upstreamUrl = `http://127.0.0.1:${upAddr.port}`;
+
+  const dataDir = mkdtempSync(join(tmpdir(), 'modelarena-svc-'));
+  const token = 'test-secret-token';
+  const service = createArenaService({
+    port: 0,
+    token,
+    dataDir,
+    defaultBackendUrl: 'http://127.0.0.1:1', // initially offline
+  });
+
+  await service.start();
+  try {
+    // 1. Unauthorized must return 401
+    const unauth = await fetch(`${service.url}/health`);
+    assert.equal(unauth.status, 401);
+
+    // 2. Authorized /health returns 200
+    const authHeaders = { Authorization: `Bearer ${token}` };
+    const health = await fetch(`${service.url}/health`, { headers: authHeaders });
+    assert.equal(health.status, 200);
+
+    // 3. Offline backend returns structured 502 BACKEND_OFFLINE
+    const offline = await fetch(`${service.url}/arena/health`, { headers: authHeaders });
+    assert.equal(offline.status, 502);
+    const offlineBody = (await offline.json()) as { code: string };
+    assert.equal(offlineBody.code, 'BACKEND_OFFLINE');
+
+    // 4. Update backend URL via PUT /config
+    const putCfg = await fetch(`${service.url}/config`, {
+      method: 'PUT',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backendUrl: upstreamUrl }),
+    });
+    assert.equal(putCfg.status, 200);
+
+    // 5. Proxy works after pointing to mock backend
+    const proxied = await fetch(`${service.url}/arena/health`, { headers: authHeaders });
+    assert.equal(proxied.status, 200);
+    const proxiedJson = (await proxied.json()) as { status: string; nvidia_configured: boolean };
+    assert.equal(proxiedJson.status, 'ok');
+    assert.equal(proxiedJson.nvidia_configured, true);
+
+    // 6. OpenChamber cron schedule tick calls backend /api/schedule/tick
+    const schedRes = await fetch(`${service.url}${SERVICE_SCHEDULE_PATH}`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        v: SERVICE_SCHEDULE_WIRE_VERSION,
+        requestId: 'req-1',
+        id: 'arena-tick',
+        at: Date.now(),
+      }),
+    });
+    assert.equal(schedRes.status, 200);
+    assert.equal(ticks.length, 1);
+
+    // 7. Invalid schedule payload returns 400
+    const badSched = await fetch(`${service.url}${SERVICE_SCHEDULE_PATH}`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wrong: true }),
+    });
+    assert.equal(badSched.status, 400);
+  } finally {
+    await service.stop();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
