@@ -5,10 +5,15 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
+    provider_mode: str = "auto"
+    opencode_cli_path: str = ""
+    opencode_provider_prefix: str = "console-nvidia"
+    opencode_use_standalone: bool = True
+
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     database_url: str = f"sqlite:///{(BACKEND_DIR / 'modelarena.db').as_posix()}"
-    request_timeout_seconds: int = 90
+    request_timeout_seconds: int = 120
     max_concurrency: int = 1
     nvidia_max_retries: int = 2
     nvidia_max_tokens: int = 2048

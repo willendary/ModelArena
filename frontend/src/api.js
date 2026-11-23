@@ -34,6 +34,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ model }),
     }),
+  setProviderMode: (mode, opencode_provider_prefix = null) =>
+    request('/api/provider/mode', {
+      method: 'PUT',
+      body: JSON.stringify({ mode, opencode_provider_prefix }),
+    }),
   startJob: ({ models, categories, repeats }) =>
     request('/api/benchmarks/jobs', {
       method: 'POST',

@@ -14,6 +14,11 @@ class ProviderTestRequest(BaseModel):
     model: str | None = None
 
 
+class ProviderModeRequest(BaseModel):
+    mode: Literal["auto", "opencode", "nvidia_api"] = "auto"
+    opencode_provider_prefix: str | None = None
+
+
 class ScheduleUpdateRequest(BaseModel):
     enabled: bool = False
     interval_minutes: int = Field(default=360, ge=5, le=10080)

@@ -61,8 +61,10 @@ export function App() {
       setHealth(h)
       if (cats?.data?.length) setCategoriesMeta(cats.data)
       setSchedule(sched)
-      if (!h.nvidia_configured) {
-        setMessage('Configure NVIDIA_API_KEY em backend/.env para listar e testar modelos NVIDIA NIM.')
+      if (h.active_provider_mode === 'opencode') {
+        setMessage(`Pronto via ${h.active_provider_label} — usando seu OpenChamber sem precisar de NVIDIA_API_KEY.`)
+      } else if (!h.provider_ready) {
+        setMessage('Nenhum provedor detectado. Abra com OpenChamber instalado ou configure NVIDIA_API_KEY em backend/.env.')
       }
     } catch (e) {
       setMessage(`Backend indisponível: ${e.message}`)
@@ -73,7 +75,7 @@ export function App() {
     try {
       const res = await api.models()
       setModels(res.data || [])
-      setMessage(`${res.coding_total ?? res.data?.length ?? 0} modelos de código/chat encontrados (${res.total ?? 0} totais na API NVIDIA).`)
+      setMessage(`${res.coding_total ?? res.data?.length ?? 0} modelos de código/chat disponíveis (${res.total ?? 0} totais no provedor NVIDIA).`)
     } catch (e) {
       setMessage(e.message)
     }
@@ -299,13 +301,13 @@ export function App() {
             <Download size={14} /> Exportar MD
           </button>
           <div className="provider">
-            <span className={health?.nvidia_configured ? 'dot' : 'dot dot-warn'} />
-            <span>{health?.nvidia_configured ? 'NVIDIA NIM' : 'Sem API Key'}</span>
+            <span className={health?.provider_ready ? 'dot' : 'dot dot-warn'} />
+            <span>{health?.active_provider_label || (health?.provider_ready ? 'NVIDIA' : 'Não configurado')}</span>
             <button
               className="icon"
               disabled={testingConn}
               onClick={handleTestProvider}
-              title="Testar conexão NVIDIA"
+              title="Testar conexão com o provedor NVIDIA"
             >
               <Wifi size={15} />
             </button>
@@ -457,7 +459,7 @@ export function App() {
                 </label>
               ))}
               {!filteredModels.length && (
-                <p className="empty">Nenhum modelo listado. Configure NVIDIA_API_KEY em backend/.env e clique em atualizar.</p>
+                <p className="empty">Nenhum modelo listado ainda. Clique em atualizar modelos (usa o OpenChamber automaticamente ou NVIDIA_API_KEY opcional).</p>
               )}
             </div>
 
@@ -597,7 +599,7 @@ export function App() {
       <RunDetailModal run={inspectRun} onClose={() => setInspectRun(null)} />
 
       <footer>
-        ModelArena v1.0 · Avaliador real (sandbox Python AST/subprocesso + SQLite/Firebird + C#/Delphi) · Compatível com OpenChamber
+        ModelArena v1.1 · Avaliador real (sandbox Python AST/subprocesso + SQLite/Firebird + C#/Delphi) · Funciona direto com OpenChamber (sem API key) ou NVIDIA NIM API
       </footer>
     </main>
   )

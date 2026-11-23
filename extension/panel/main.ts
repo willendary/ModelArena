@@ -6,6 +6,10 @@ type TabId = 'ranking' | 'run' | 'automation' | 'connection';
 interface HealthPayload {
   status: string;
   version: string;
+  provider_ready?: boolean;
+  active_provider_mode?: string;
+  active_provider_label?: string;
+  opencode_available?: boolean;
   nvidia_configured: boolean;
   scheduler_enabled: boolean;
   active_jobs: number;
@@ -193,9 +197,12 @@ async function refreshAll(): Promise<void> {
     state.health = h;
     state.backendOnline = true;
     state.noticeError = false;
-    state.notice = h.nvidia_configured
-      ? `Backend conectado (${state.backendUrl}) · NVIDIA NIM pronta.`
-      : 'Backend conectado, mas NVIDIA_API_KEY ainda não está configurada em backend/.env.';
+    const isReady = h.provider_ready ?? h.nvidia_configured;
+    state.notice = isReady
+      ? h.active_provider_mode === 'opencode'
+        ? `Pronto via ${h.active_provider_label || 'OpenChamber (console-nvidia)'} — sem precisar de API key!`
+        : `Backend conectado (${state.backendUrl}) · ${h.active_provider_label || 'NVIDIA NIM'} pronta.`
+      : 'Backend conectado, mas nenhum provedor foi encontrado (verifique o OpenChamber ou configure NVIDIA_API_KEY).';
 
     const [rk, rec, hist, jobsRes, sched] = await Promise.all([
       serviceJson<{ data: RankingRow[] }>(
@@ -216,7 +223,7 @@ async function refreshAll(): Promise<void> {
     state.activeJob = running;
     syncPolling();
 
-    if (h.nvidia_configured && state.models.length === 0) {
+    if (isReady && state.models.length === 0) {
       await loadModels(false);
     }
   } catch (err) {
@@ -478,7 +485,7 @@ function renderRunTab(): string {
           `;
         })
         .join('')
-    : '<p class="ma-subtitle">Nenhum modelo carregado. Clique em "Carregar modelos" (requer NVIDIA_API_KEY no backend).</p>';
+    : '<p class="ma-subtitle">Nenhum modelo carregado. Clique em "Atualizar lista" para listar os modelos NVIDIA do seu OpenChamber.</p>';
 
   const catChips = ALL_CATEGORIES.map(
     (c) =>
@@ -602,7 +609,7 @@ function renderConnectionTab(): string {
   return `
     <div class="ma-card">
       <strong>Conexão com Backend ModelArena</strong>
-      <div class="ma-subtitle">A chave NVIDIA_API_KEY permanece apenas no backend local (nunca trafega no painel).</div>
+      <div class="ma-subtitle">Modo ativo: <b>${escapeHtml(state.health?.active_provider_label || 'Aguardando conexão')}</b>. Funciona direto com o provedor <code>console-nvidia</code> do seu OpenChamber sem precisar de API key.</div>
       <input class="ma-input ma-mono" id="ma-backend-url" value="${escapeHtml(state.backendUrl)}" />
       <div class="ma-btn-row">
         <button class="ma-btn primary" data-action="save-backend-url">Salvar URL e reconectar</button>
@@ -652,16 +659,17 @@ function render(): void {
     body = renderConnectionTab();
   }
 
+  const isReady = state.health?.provider_ready ?? state.health?.nvidia_configured;
   const dotClass = !state.backendOnline
     ? 'ma-dot offline'
-    : state.health?.nvidia_configured
+    : isReady
       ? 'ma-dot'
       : 'ma-dot warn';
   const statusLabel = !state.backendOnline
     ? 'Offline'
-    : state.health?.nvidia_configured
-      ? 'NVIDIA NIM'
-      : 'Sem Key';
+    : isReady
+      ? state.health?.active_provider_label || 'NVIDIA'
+      : 'Não config.';
 
   root.innerHTML = `
     <div class="ma-shell ${state.surface === 'page' ? 'ma-page' : ''}">

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Port = 8765,
     [string]$HostAddress = "127.0.0.1",
     [switch]$SkipFrontendBuild
@@ -26,10 +26,17 @@ if (-not (Test-Path $EnvFile)) {
     Write-Host "[!] Criado backend/.env a partir de .env.example." -ForegroundColor Yellow
 }
 
+$OpenCodeBundled = Join-Path $env:LOCALAPPDATA "Programs\@openchamberelectron\resources\opencode-cli\opencode.exe"
+$HasOpenCode = (Test-Path $OpenCodeBundled) -or [bool](Get-Command opencode -ErrorAction SilentlyContinue)
+
 $envContent = Get-Content $EnvFile -Raw -ErrorAction SilentlyContinue
-if (-not ($envContent -match "NVIDIA_API_KEY=\S+") -and -not $env:NVIDIA_API_KEY) {
-    Write-Host "[!] Aviso: NVIDIA_API_KEY ainda nao configurada em backend/.env (nem na variavel de ambiente)." -ForegroundColor Yellow
-    Write-Host "    Edite $EnvFile e informe sua chave NVIDIA NIM antes de rodar benchmarks." -ForegroundColor Yellow
+$HasApiKey = ($envContent -match "NVIDIA_API_KEY=\S+") -or [bool]$env:NVIDIA_API_KEY
+
+if ($HasOpenCode -and -not $HasApiKey) {
+    Write-Host "[OK] OpenChamber / OpenCode CLI detectado — usando provedor console-nvidia SEM precisar de NVIDIA_API_KEY!" -ForegroundColor Green
+} elseif (-not $HasOpenCode -and -not $HasApiKey) {
+    Write-Host "[!] Aviso: OpenCode CLI nao detectado e NVIDIA_API_KEY nao configurada em backend/.env." -ForegroundColor Yellow
+    Write-Host "    Instale o OpenChamber Desktop ou informe NVIDIA_API_KEY em $EnvFile." -ForegroundColor Yellow
 }
 
 $FrontendDist = Join-Path $FrontendDir "dist\index.html"

@@ -16,7 +16,8 @@ from .benchmarks import get_tasks, list_categories
 from .config import settings
 from .db import SessionLocal, ensure_schema, get_db
 from .models import BenchmarkJob, Run
-from .provider import NVIDIAProvider, ProviderError
+from .provider import ProviderError
+from .provider_router import ProviderRouter
 from .ranking import build_ranking, build_recommendation, export_ranking_markdown
 from .runner import (
     BenchmarkEngine,
@@ -25,11 +26,11 @@ from .runner import (
     serialize_run,
     serialize_schedule,
 )
-from .schemas import BenchmarkRequest, ProviderTestRequest, ScheduleUpdateRequest
+from .schemas import BenchmarkRequest, ProviderModeRequest, ProviderTestRequest, ScheduleUpdateRequest
 
 ensure_schema()
 
-provider = NVIDIAProvider()
+provider = ProviderRouter()
 engine_runner = BenchmarkEngine(
     provider_getter=lambda: provider,
     session_factory=SessionLocal,
@@ -47,7 +48,7 @@ async def lifespan(_app: FastAPI):
         await engine_runner.stop_scheduler()
 
 
-app = FastAPI(title="ModelArena API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="ModelArena API", version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -61,16 +62,43 @@ app.add_middleware(
 async def health(db: Session = Depends(get_db)):
     sched = get_or_create_schedule(db)
     active_jobs = db.query(BenchmarkJob).filter(BenchmarkJob.status.in_(["queued", "running"])).count()
+    pstatus = (
+        provider.status()
+        if hasattr(provider, "status")
+        else {
+            "configured_mode": "nvidia_api",
+            "active_provider_mode": "nvidia_api",
+            "active_provider_label": "NVIDIA NIM API",
+            "provider_ready": True,
+            "opencode_available": False,
+            "opencode_cli_path": None,
+            "opencode_provider_prefix": settings.opencode_provider_prefix,
+            "nvidia_configured": settings.nvidia_configured,
+        }
+    )
     return {
         "status": "ok",
         "version": app.version,
-        "provider": "nvidia",
-        "nvidia_configured": settings.nvidia_configured,
+        "provider": pstatus["active_provider_mode"],
+        **pstatus,
         "nvidia_base_url": settings.nvidia_base_url,
         "max_concurrency": max(1, settings.max_concurrency),
         "scheduler_enabled": bool(sched.enabled),
         "active_jobs": active_jobs,
     }
+
+
+@app.put("/api/provider/mode")
+async def set_provider_mode(request: ProviderModeRequest):
+    if not hasattr(provider, "set_mode"):
+        raise HTTPException(status_code=400, detail="Troca de modo não suportada pelo provedor ativo.")
+    try:
+        return provider.set_mode(
+            request.mode,
+            provider_prefix=request.opencode_provider_prefix,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/categories")

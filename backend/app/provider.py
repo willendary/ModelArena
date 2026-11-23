@@ -12,7 +12,7 @@ from .config import settings
 NON_CHAT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("embedding", re.compile(r"(embed|bge-|e5-|snowflake-arctic-embed|nv-embed)", re.I)),
     ("rerank", re.compile(r"(rerank|nv-rerank)", re.I)),
-    ("audio", re.compile(r"(whisper|parakeet|riva|canary|tts|asr|speech|audio)", re.I)),
+    ("audio", re.compile(r"(whisper|parakeet|riva|canary|tts|asr|speech|audio|voice)", re.I)),
     ("vision_gen", re.compile(r"(stable-diffusion|sdxl|flux|imagen|cosmos-predict|edify|trellis|consistory|visual-change)", re.I)),
     ("guardrail", re.compile(r"(guard|shield|safety|nemoguard|content-safety|topic-control|jailbreak)", re.I)),
     ("reward", re.compile(r"(reward|helpsteer|steerm|prm-)", re.I)),

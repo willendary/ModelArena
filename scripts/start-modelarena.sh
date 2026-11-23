@@ -19,7 +19,7 @@ fi
 
 if [ ! -f "$BACKEND_DIR/.env" ]; then
   cp "$BACKEND_DIR/.env.example" "$BACKEND_DIR/.env"
-  echo "[!] Criado backend/.env a partir de .env.example. Configure NVIDIA_API_KEY."
+  echo "[!] Criado backend/.env a partir de .env.example (NVIDIA_API_KEY e opcional se o OpenChamber/OpenCode estiver instalado)."
 fi
 
 if [ ! -f "$FRONTEND_DIR/dist/index.html" ]; then

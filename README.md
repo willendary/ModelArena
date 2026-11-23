@@ -32,16 +32,15 @@ O objetivo do **ModelArena** é simples: abrir o **OpenChamber**, clicar em **Mo
 
 ---
 
-## Início Rápido
+## Início Rápido (Sem precisar de API Key!)
 
-### 1. Configurar a chave NVIDIA NIM
-```bash
-cp backend/.env.example backend/.env
-# Edite backend/.env e informe sua chave em NVIDIA_API_KEY=...
-```
-> A chave `NVIDIA_API_KEY` fica **exclusivamente no backend local** e nunca é enviada ao navegador nem copiada das credenciais do OpenChamber.
+### Modo padrão: direto pelo seu OpenChamber (`console-nvidia`)
+Se você usa o provedor NVIDIA no **OpenChamber** sem `NVIDIA_API_KEY`, **não precisa configurar nenhuma chave**!
+O ModelArena detecta automaticamente o CLI oficial `opencode` empacotado no OpenChamber Desktop, descobre todos os modelos `console-nvidia/*` disponíveis na sua conta e executa os benchmarks em sessões arquivadas e isoladas (`--archived`, sem poluir seu histórico de chats e sem permissões de escrita).
 
-### 2. Subir o ModelArena (1 comando)
+> *(Opcional)* Se você também quiser usar uma chave direta da API NVIDIA NIM, basta preencher `NVIDIA_API_KEY` em `backend/.env` ou alternar `PROVIDER_MODE` (`auto`, `opencode`, `nvidia_api`).
+
+### Subir o ModelArena (1 comando)
 
 **Windows (PowerShell):**
 ```powershell
@@ -72,7 +71,7 @@ No OpenChamber, abra **Settings → Extensions → Add** e escolha uma das 3 op�
 2. **Via pasta local (ideal para desenvolvimento):**
    Selecione a pasta local do repositório (ex.: `D:\Dados\Projetos\ModelArena`).
 3. **Via arquivo `.zip` da Release:**
-   Baixe `model-arena-openchamber-extension-v1.0.0.zip` na página de [Releases](https://github.com/willendary/ModelArena/releases) e importe em **Settings → Extensions**.
+   Baixe `model-arena-openchamber-extension-v1.1.0.zip` na página de [Releases](https://github.com/willendary/ModelArena/releases) e importe em **Settings → Extensions**.
 
 Ao instalar, aprove o serviço local (`service`) quando solicitado pelo OpenChamber. Depois basta clicar no ícone **Model Arena** na barra lateral direita (ou abrir como página completa em *Extension pages*).
 
