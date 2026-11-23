@@ -7,8 +7,8 @@ from sqlalchemy import desc, func, case
 from .config import settings
 from .db import Base, engine, get_db
 from .models import Run
-from .schemas import BenchmarkRequest
-from .provider import NVIDIAProvider
+from .schemas import BenchmarkRequest, ProviderTestRequest
+from .provider import NVIDIAProvider, ProviderError
 from .benchmarks import get_tasks, deterministic_score
 
 Base.metadata.create_all(bind=engine)
@@ -35,10 +35,27 @@ async def health():
     }
 
 @app.get("/api/models")
-async def models():
+async def models(coding_only: bool = False, search: str | None = None):
     try:
-        items = await provider.list_models()
-        return {"data": [{"id": m.get("id"), "object": m.get("object"), "owned_by": m.get("owned_by")} for m in items if m.get("id")]}
+        items = await provider.list_models(coding_only=coding_only, search=search)
+        return {
+            "data": items,
+            "total": len(items),
+            "coding_total": sum(1 for m in items if m.get("is_coding_candidate")),
+        }
+    except ProviderError as exc:
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/api/provider/test")
+async def test_provider(request: ProviderTestRequest | None = None):
+    try:
+        model = request.model if request else None
+        return await provider.test_connection(model=model)
+    except ProviderError as exc:
+        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
