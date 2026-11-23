@@ -12,6 +12,40 @@ $VenvPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
 $EnvFile = Join-Path $BackendDir ".env"
 $EnvExample = Join-Path $BackendDir ".env.example"
 
+function Test-TcpPortAvailable {
+    param([string]$BindHost, [int]$TestPort)
+    $listener = $null
+    try {
+        $ip = [System.Net.IPAddress]::Parse($BindHost)
+        $listener = New-Object System.Net.Sockets.TcpListener($ip, $TestPort)
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+function Find-FreePort {
+    param([string]$BindHost, [int]$PreferredPort)
+    $candidates = @($PreferredPort, 8766, 8770, 8865, 8965, 9765, 18765) | Select-Object -Unique
+    foreach ($candidate in $candidates) {
+        if (Test-TcpPortAvailable -BindHost $BindHost -TestPort $candidate) {
+            return $candidate
+        }
+    }
+    # Last resort: ask OS for an ephemeral port
+    $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($BindHost), 0)
+    $listener.Start()
+    $ephemeral = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+    $listener.Stop()
+    return $ephemeral
+}
+
 Write-Host "=== ModelArena Launcher ===" -ForegroundColor Green
 
 if (-not (Test-Path $VenvPython)) {
@@ -53,14 +87,33 @@ if (-not $SkipFrontendBuild -and -not (Test-Path $FrontendDist)) {
     }
 }
 
-Write-Host "[3/3] Iniciando ModelArena em http://${HostAddress}:${Port}" -ForegroundColor Green
-Write-Host "      Dashboard Web : http://${HostAddress}:${Port}/" -ForegroundColor Gray
-Write-Host "      API Swagger   : http://${HostAddress}:${Port}/docs" -ForegroundColor Gray
-Write-Host "      OpenChamber   : Settings -> Extensions -> Model Arena" -ForegroundColor Gray
+$SelectedPort = Find-FreePort -BindHost $HostAddress -PreferredPort $Port
+if ($SelectedPort -ne $Port) {
+    Write-Host "[!] Porta $Port ja esta ocupada ou bloqueada neste Windows. Usando porta livre $SelectedPort automaticamente." -ForegroundColor Yellow
+}
+
+$RuntimeDir = Join-Path $env:USERPROFILE ".modelarena"
+New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
+$RuntimeInfo = @{
+    url       = "http://${HostAddress}:${SelectedPort}"
+    host      = $HostAddress
+    port      = $SelectedPort
+    updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+} | ConvertTo-Json
+[System.IO.File]::WriteAllText(
+    (Join-Path $RuntimeDir "runtime.json"),
+    $RuntimeInfo,
+    (New-Object System.Text.UTF8Encoding($false))
+)
+
+Write-Host "[3/3] Iniciando ModelArena em http://${HostAddress}:${SelectedPort}" -ForegroundColor Green
+Write-Host "      Dashboard Web : http://${HostAddress}:${SelectedPort}/" -ForegroundColor Gray
+Write-Host "      API Swagger   : http://${HostAddress}:${SelectedPort}/docs" -ForegroundColor Gray
+Write-Host "      OpenChamber   : Settings -> Extensions -> Model Arena (porta sincronizada automaticamente)" -ForegroundColor Gray
 
 Push-Location $BackendDir
 try {
-    & $VenvPython -m uvicorn app.main:app --host $HostAddress --port $Port
+    & $VenvPython -m uvicorn app.main:app --host $HostAddress --port $SelectedPort
 } finally {
     Pop-Location
 }

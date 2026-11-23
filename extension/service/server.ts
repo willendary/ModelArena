@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   SERVICE_SCHEDULE_PATH,
@@ -16,6 +17,7 @@ export interface ArenaServiceOptions {
   token: string;
   dataDir?: string;
   defaultBackendUrl?: string;
+  runtimeFilePath?: string;
 }
 
 export interface ArenaServiceHandle {
@@ -26,6 +28,7 @@ export interface ArenaServiceHandle {
 
 interface StoredConfig {
   backendUrl: string;
+  userConfigured?: boolean;
 }
 
 export function normalizeBackendUrl(raw: string): string | null {
@@ -40,17 +43,34 @@ export function normalizeBackendUrl(raw: string): string | null {
   }
 }
 
-function loadConfig(dataDir: string | undefined, fallbackUrl: string): StoredConfig {
-  if (!dataDir) return { backendUrl: fallbackUrl };
+export function readRuntimeBackendUrl(runtimeFilePath?: string): string | null {
+  const filePath = runtimeFilePath || join(homedir(), '.modelarena', 'runtime.json');
   try {
-    const filePath = join(dataDir, 'config.json');
-    const raw = JSON.parse(readFileSync(filePath, 'utf8')) as Partial<StoredConfig>;
-    const normalized = raw.backendUrl ? normalizeBackendUrl(raw.backendUrl) : null;
-    if (normalized) return { backendUrl: normalized };
+    const content = readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+    const raw = JSON.parse(content) as { url?: string };
+    return raw.url ? normalizeBackendUrl(raw.url) : null;
   } catch {
-    // Config file not initialized yet
+    return null;
   }
-  return { backendUrl: fallbackUrl };
+}
+
+function loadConfig(dataDir: string | undefined, fallbackUrl: string, runtimeFilePath?: string): StoredConfig {
+  if (dataDir) {
+    try {
+      const filePath = join(dataDir, 'config.json');
+      const content = readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+      const raw = JSON.parse(content) as Partial<StoredConfig>;
+      const normalized = raw.backendUrl ? normalizeBackendUrl(raw.backendUrl) : null;
+      if (normalized) return { backendUrl: normalized, userConfigured: Boolean(raw.userConfigured) };
+    } catch {
+      // Config file not initialized yet
+    }
+  }
+  const discovered = readRuntimeBackendUrl(runtimeFilePath);
+  if (discovered) {
+    return { backendUrl: discovered, userConfigured: false };
+  }
+  return { backendUrl: fallbackUrl, userConfigured: false };
 }
 
 function saveConfig(dataDir: string | undefined, cfg: StoredConfig): void {
@@ -86,16 +106,27 @@ export function createArenaService(options: ArenaServiceOptions): ArenaServiceHa
   let server: Server | undefined;
   let boundPort = options.port;
   const fallback = normalizeBackendUrl(options.defaultBackendUrl || DEFAULT_BACKEND_URL) || DEFAULT_BACKEND_URL;
-  let config = loadConfig(options.dataDir, fallback);
+  let config = loadConfig(options.dataDir, fallback, options.runtimeFilePath);
 
-  async function proxyToBackend(
+  function refreshRuntimeUrlIfAuto(): string {
+    if (!config.userConfigured) {
+      const discovered = readRuntimeBackendUrl(options.runtimeFilePath);
+      if (discovered) {
+        config = { backendUrl: discovered, userConfigured: false };
+      }
+    }
+    return config.backendUrl;
+  }
+
+  async function doFetch(
+    baseUrl: string,
     method: string,
     apiPath: string,
     query: string,
     body: string | undefined,
     timeoutMs: number,
   ): Promise<{ status: number; contentType: string; body: string }> {
-    const targetUrl = `${config.backendUrl}${apiPath}${query ? `?${query}` : ''}`;
+    const targetUrl = `${baseUrl}${apiPath}${query ? `?${query}` : ''}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -113,7 +144,34 @@ export function createArenaService(options: ArenaServiceOptions): ArenaServiceHa
         contentType: res.headers.get('content-type') || 'application/json; charset=utf-8',
         body: text,
       };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function proxyToBackend(
+    method: string,
+    apiPath: string,
+    query: string,
+    body: string | undefined,
+    timeoutMs: number,
+  ): Promise<{ status: number; contentType: string; body: string }> {
+    const currentUrl = refreshRuntimeUrlIfAuto();
+    try {
+      return await doFetch(currentUrl, method, apiPath, query, body, timeoutMs);
     } catch (err) {
+      // If a user-saved URL is offline, try auto-discovered runtime.json once as a fallback
+      const discovered = readRuntimeBackendUrl(options.runtimeFilePath);
+      if (discovered && discovered !== currentUrl) {
+        try {
+          const retryRes = await doFetch(discovered, method, apiPath, query, body, timeoutMs);
+          config = { backendUrl: discovered, userConfigured: false };
+          return retryRes;
+        } catch {
+          // Fall through to structured error
+        }
+      }
+
       const aborted = err instanceof Error && err.name === 'AbortError';
       if (aborted) {
         return {
@@ -131,11 +189,9 @@ export function createArenaService(options: ArenaServiceOptions): ArenaServiceHa
         body: JSON.stringify({
           code: 'BACKEND_OFFLINE',
           backendUrl: config.backendUrl,
-          detail: `Backend ModelArena não está acessível em ${config.backendUrl}. Inicie o serviço local para executar benchmarks.`,
+          detail: `Backend ModelArena não está acessível em ${config.backendUrl}. Inicie o serviço local (scripts/start-modelarena.ps1).`,
         }),
       };
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -156,13 +212,13 @@ export function createArenaService(options: ArenaServiceOptions): ArenaServiceHa
         const [pathname, query = ''] = rawUrl.split('?', 2);
 
         if (method === 'GET' && pathname === '/health') {
-          writeJson(res, 200, { status: 'ok', backendUrl: config.backendUrl });
+          writeJson(res, 200, { status: 'ok', backendUrl: refreshRuntimeUrlIfAuto() });
           return;
         }
 
         if (pathname === '/config') {
           if (method === 'GET') {
-            writeJson(res, 200, config);
+            writeJson(res, 200, { backendUrl: refreshRuntimeUrlIfAuto() });
             return;
           }
           if (method === 'PUT') {
@@ -177,9 +233,9 @@ export function createArenaService(options: ArenaServiceOptions): ArenaServiceHa
                 });
                 return;
               }
-              config = { backendUrl: normalized };
+              config = { backendUrl: normalized, userConfigured: true };
               saveConfig(options.dataDir, config);
-              writeJson(res, 200, config);
+              writeJson(res, 200, { backendUrl: config.backendUrl });
             } catch (err) {
               writeJson(res, err instanceof Error && err.message === 'PAYLOAD_TOO_LARGE' ? 413 : 400, {
                 code: 'BAD_REQUEST',

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { SERVICE_SCHEDULE_PATH, SERVICE_SCHEDULE_WIRE_VERSION } from '@openchamber/sdk';
@@ -39,12 +39,14 @@ test('OpenChamber guest service enforces bearer auth, proxies backend API, persi
   const upstreamUrl = `http://127.0.0.1:${upAddr.port}`;
 
   const dataDir = mkdtempSync(join(tmpdir(), 'modelarena-svc-'));
+  const runtimeFile = join(dataDir, 'runtime.json');
   const token = 'test-secret-token';
   const service = createArenaService({
     port: 0,
     token,
     dataDir,
     defaultBackendUrl: 'http://127.0.0.1:1', // initially offline
+    runtimeFilePath: runtimeFile,
   });
 
   await service.start();
@@ -140,5 +142,46 @@ test('compiled service/main.js boots cleanly under Node ESM runtime', async () =
   } finally {
     child.kill();
     rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('service auto-discovers fallback backend port from runtime.json', async () => {
+  const upstream = createServer((req, res) => {
+    if (req.url === '/api/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', active_provider_mode: 'opencode' }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upAddr = upstream.address();
+  assert(upAddr && typeof upAddr === 'object');
+  const upstreamUrl = `http://127.0.0.1:${upAddr.port}`;
+
+  const dir = mkdtempSync(join(tmpdir(), 'modelarena-rt-'));
+  const runtimeFile = join(dir, 'runtime.json');
+  writeFileSync(runtimeFile, JSON.stringify({ url: upstreamUrl, port: upAddr.port }), 'utf8');
+
+  const token = 'rt-token';
+  const svc = createArenaService({
+    port: 0,
+    token,
+    dataDir: dir,
+    defaultBackendUrl: 'http://127.0.0.1:1',
+    runtimeFilePath: runtimeFile,
+  });
+  await svc.start();
+  try {
+    const res = await fetch(`${svc.url}/arena/health`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { status: string; active_provider_mode: string };
+    assert.equal(body.active_provider_mode, 'opencode');
+  } finally {
+    await svc.stop();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
   }
 });

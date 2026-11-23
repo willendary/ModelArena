@@ -48,10 +48,11 @@ async def lifespan(_app: FastAPI):
         await engine_runner.stop_scheduler()
 
 
-app = FastAPI(title="ModelArena API", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="ModelArena API", version="1.1.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
