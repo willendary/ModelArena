@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { SERVICE_SCHEDULE_PATH, SERVICE_SCHEDULE_WIRE_VERSION } from '@openchamber/sdk';
 import { createArenaService, normalizeBackendUrl } from '../service/server';
 
@@ -102,6 +103,42 @@ test('OpenChamber guest service enforces bearer auth, proxies backend API, persi
   } finally {
     await service.stop();
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('compiled service/main.js boots cleanly under Node ESM runtime', async () => {
+  const port = 19780 + Math.floor(Math.random() * 200);
+  const token = 'spawn-smoke-token';
+  const dataDir = mkdtempSync(join(tmpdir(), 'modelarena-spawn-'));
+  const child = spawn(process.execPath, [resolve('service/main.js')], {
+    env: {
+      ...process.env,
+      OPENCHAMBER_SERVICE_PORT: String(port),
+      OPENCHAMBER_SERVICE_TOKEN: token,
+      OPENCHAMBER_SERVICE_DATA_DIR: dataDir,
+    },
+    stdio: 'ignore',
+  });
+
+  try {
+    let ok = false;
+    for (let i = 0; i < 30; i += 1) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 200) {
+          ok = true;
+          break;
+        }
+      } catch {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    assert.equal(ok, true, 'Compiled service/main.js failed to respond on /health');
+  } finally {
+    child.kill();
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
