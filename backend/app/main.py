@@ -1,21 +1,53 @@
-import asyncio
-import json
-import time
+from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
+import json
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import case, desc, func
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from .benchmarks import evaluate_answer, get_tasks, list_categories
+from .benchmarks import get_tasks, list_categories
 from .config import settings
-from .db import ensure_schema, get_db
-from .models import Run
+from .db import SessionLocal, ensure_schema, get_db
+from .models import BenchmarkJob, Run
 from .provider import NVIDIAProvider, ProviderError
-from .schemas import BenchmarkRequest, ProviderTestRequest
+from .ranking import build_ranking, build_recommendation, export_ranking_markdown
+from .runner import (
+    BenchmarkEngine,
+    get_or_create_schedule,
+    serialize_job,
+    serialize_run,
+    serialize_schedule,
+)
+from .schemas import BenchmarkRequest, ProviderTestRequest, ScheduleUpdateRequest
 
 ensure_schema()
-app = FastAPI(title="ModelArena API", version="0.3.0")
+
+provider = NVIDIAProvider()
+engine_runner = BenchmarkEngine(
+    provider_getter=lambda: provider,
+    session_factory=SessionLocal,
+    max_concurrency=settings.max_concurrency,
+)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    ensure_schema()
+    engine_runner.start_scheduler()
+    try:
+        yield
+    finally:
+        await engine_runner.stop_scheduler()
+
+
+app = FastAPI(title="ModelArena API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -23,47 +55,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-provider = NVIDIAProvider()
-semaphore = asyncio.Semaphore(max(1, settings.max_concurrency))
-
-
-def _serialize_run(row: Run, include_full: bool = False) -> dict:
-    evaluation = None
-    if row.evaluation_json:
-        try:
-            evaluation = json.loads(row.evaluation_json)
-        except Exception:
-            evaluation = None
-    item = {
-        "id": row.id,
-        "job_id": row.job_id,
-        "model_id": row.model_id,
-        "category": row.category,
-        "task_id": row.task_id,
-        "score": row.score,
-        "latency_ms": row.latency_ms,
-        "input_tokens": row.input_tokens,
-        "output_tokens": row.output_tokens,
-        "tokens_per_second": row.tokens_per_second,
-        "execution_passed": row.execution_passed,
-        "tests_passed": row.tests_passed,
-        "tests_total": row.tests_total,
-        "summary": evaluation.get("summary") if isinstance(evaluation, dict) else None,
-        "evaluator_type": evaluation.get("evaluator_type") if isinstance(evaluation, dict) else None,
-        "status": row.status,
-        "error": row.error,
-        "created_at": str(row.created_at),
-    }
-    if include_full:
-        item["prompt"] = row.prompt
-        item["response"] = row.response
-        item["reasoning"] = row.reasoning
-        item["evaluation"] = evaluation
-    return item
 
 
 @app.get("/api/health")
-async def health():
+async def health(db: Session = Depends(get_db)):
+    sched = get_or_create_schedule(db)
+    active_jobs = db.query(BenchmarkJob).filter(BenchmarkJob.status.in_(["queued", "running"])).count()
     return {
         "status": "ok",
         "version": app.version,
@@ -71,6 +68,8 @@ async def health():
         "nvidia_configured": settings.nvidia_configured,
         "nvidia_base_url": settings.nvidia_base_url,
         "max_concurrency": max(1, settings.max_concurrency),
+        "scheduler_enabled": bool(sched.enabled),
+        "active_jobs": active_jobs,
     }
 
 
@@ -106,57 +105,103 @@ async def test_provider(request: ProviderTestRequest | None = None):
 
 
 @app.post("/api/benchmarks")
-async def run_benchmark(request: BenchmarkRequest, db: Session = Depends(get_db)):
-    tasks = get_tasks(request.categories)
-    if not tasks:
-        raise HTTPException(status_code=400, detail="Nenhuma categoria válida selecionada.")
-    created = []
-    for model in request.models:
-        for category, task in tasks:
-            for _ in range(request.repeats):
-                started = time.perf_counter()
-                try:
-                    async with semaphore:
-                        result = await provider.chat(model, task["prompt"])
-                    latency = result.get("latency_ms") or round((time.perf_counter() - started) * 1000, 1)
-                    evaluation = evaluate_answer(category, task["id"], result["text"])
-                    row = Run(
-                        model_id=model,
-                        category=category,
-                        task_id=task["id"],
-                        prompt=task["prompt"],
-                        response=result["text"],
-                        reasoning=result.get("reasoning_text"),
-                        latency_ms=latency,
-                        input_tokens=result.get("input_tokens"),
-                        output_tokens=result.get("output_tokens"),
-                        tokens_per_second=result.get("tokens_per_second"),
-                        score=evaluation["score"],
-                        execution_passed=evaluation["execution_passed"],
-                        tests_passed=evaluation["tests_passed"],
-                        tests_total=evaluation["tests_total"],
-                        evaluation_json=json.dumps(evaluation, ensure_ascii=False),
-                        status="success",
-                    )
-                except Exception as exc:
-                    row = Run(
-                        model_id=model,
-                        category=category,
-                        task_id=task["id"],
-                        prompt=task["prompt"],
-                        latency_ms=round((time.perf_counter() - started) * 1000, 1),
-                        score=0,
-                        execution_passed=False,
-                        tests_passed=0,
-                        tests_total=0,
-                        status="error",
-                        error=str(exc),
-                    )
-                db.add(row)
-                db.commit()
-                db.refresh(row)
-                created.append(_serialize_run(row))
-    return {"created": len(created), "results": created}
+async def run_benchmark(request: BenchmarkRequest):
+    try:
+        job, _ = engine_runner.create_job(
+            request.models, request.categories, request.repeats, trigger="manual"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    results = await engine_runner.execute_job(job.id)
+    return {"job_id": job.id, "created": len(results), "results": results}
+
+
+@app.post("/api/benchmarks/jobs")
+async def create_benchmark_job(request: BenchmarkRequest):
+    try:
+        job = engine_runner.start_background_job(
+            request.models, request.categories, request.repeats, trigger="manual"
+        )
+        return {"job": job}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/benchmarks/jobs")
+def list_benchmark_jobs(limit: int = 20, db: Session = Depends(get_db)):
+    rows = (
+        db.query(BenchmarkJob)
+        .order_by(desc(BenchmarkJob.created_at))
+        .limit(min(max(limit, 1), 100))
+        .all()
+    )
+    return {"data": [serialize_job(j) for j in rows]}
+
+
+@app.get("/api/benchmarks/jobs/{job_id}")
+def get_benchmark_job(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(BenchmarkJob).filter(BenchmarkJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job não encontrado.")
+    runs = db.query(Run).filter(Run.job_id == job_id).order_by(desc(Run.id)).all()
+    return {"job": serialize_job(job), "runs": [serialize_run(r) for r in runs]}
+
+
+@app.post("/api/benchmarks/jobs/{job_id}/cancel")
+def cancel_benchmark_job(job_id: str):
+    if not engine_runner.cancel_job(job_id):
+        raise HTTPException(status_code=404, detail="Job ativo não encontrado.")
+    return {"cancelled": True, "job_id": job_id}
+
+
+@app.get("/api/schedule")
+def get_schedule(db: Session = Depends(get_db)):
+    cfg = get_or_create_schedule(db)
+    return serialize_schedule(cfg)
+
+
+@app.put("/api/schedule")
+def update_schedule(request: ScheduleUpdateRequest, db: Session = Depends(get_db)):
+    valid_tasks = get_tasks(request.categories)
+    if not valid_tasks:
+        raise HTTPException(status_code=400, detail="Selecione pelo menos uma categoria válida.")
+    if request.enabled and request.model_selection_mode == "manual" and not request.models:
+        raise HTTPException(
+            status_code=400,
+            detail="No modo manual, selecione pelo menos um modelo ou alterne para descoberta automática.",
+        )
+
+    cfg = get_or_create_schedule(db)
+    cfg.enabled = request.enabled
+    cfg.interval_minutes = request.interval_minutes
+    cfg.model_selection_mode = request.model_selection_mode
+    cfg.max_auto_models = request.max_auto_models
+    cfg.models_json = json.dumps(list(dict.fromkeys(m.strip() for m in request.models if m.strip())))
+    cfg.categories_json = json.dumps(request.categories)
+    cfg.repeats = request.repeats
+    if cfg.enabled:
+        cfg.next_run_at = datetime.now(timezone.utc) + timedelta(minutes=cfg.interval_minutes)
+    else:
+        cfg.next_run_at = None
+    db.commit()
+    db.refresh(cfg)
+    return serialize_schedule(cfg)
+
+
+@app.post("/api/schedule/run-now")
+async def run_schedule_now():
+    res = await engine_runner.trigger_schedule_if_due(force=True)
+    if not res.get("triggered"):
+        raise HTTPException(
+            status_code=400,
+            detail=res.get("detail") or f"Não foi possível iniciar o agendamento: {res.get('reason')}",
+        )
+    return res
+
+
+@app.post("/api/schedule/tick")
+async def tick_schedule():
+    return await engine_runner.trigger_schedule_if_due(force=False)
 
 
 @app.get("/api/runs/{run_id}")
@@ -164,45 +209,74 @@ def get_run_detail(run_id: int, db: Session = Depends(get_db)):
     row = db.query(Run).filter(Run.id == run_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Execução não encontrada.")
-    return _serialize_run(row, include_full=True)
+    return serialize_run(row, include_full=True)
 
 
 @app.get("/api/ranking")
-def ranking(db: Session = Depends(get_db)):
-    rows = (
-        db.query(
-            Run.model_id,
-            func.avg(Run.score).label("score"),
-            func.avg(Run.latency_ms).label("latency"),
-            func.avg(Run.tokens_per_second).label("tps"),
-            func.count(Run.id).label("runs"),
-            func.sum(case((Run.status == "success", 1), else_=0)).label("successes"),
-        )
-        .group_by(Run.model_id)
-        .order_by(desc("score"))
-        .all()
-    )
-    return {
-        "data": [
-            {
-                "model_id": r.model_id,
-                "score": round(float(r.score or 0), 1),
-                "avg_latency_ms": round(float(r.latency or 0), 1),
-                "avg_tokens_per_second": round(float(r.tps), 1) if r.tps else None,
-                "runs": r.runs,
-                "successes": int(r.successes or 0),
-            }
-            for r in rows
-        ]
-    }
+def ranking(
+    category: str | None = None,
+    days: int | None = Query(default=None, ge=1, le=365),
+    db: Session = Depends(get_db),
+):
+    return build_ranking(db, category=category, days=days)
+
+
+@app.get("/api/recommendation")
+def recommendation(db: Session = Depends(get_db)):
+    return build_recommendation(db)
+
+
+@app.get("/api/ranking/export")
+def export_ranking(
+    format: str = Query(default="markdown", pattern="^(markdown|json)$"),
+    db: Session = Depends(get_db),
+):
+    rk = build_ranking(db)
+    rec = build_recommendation(db)
+    if format == "json":
+        return {"ranking": rk, "recommendation": rec}
+    md = export_ranking_markdown(rk, rec)
+    return PlainTextResponse(content=md, media_type="text/markdown; charset=utf-8")
 
 
 @app.get("/api/history")
-def history(limit: int = 100, model_id: str | None = None, category: str | None = None, db: Session = Depends(get_db)):
+def history(
+    limit: int = 100,
+    model_id: str | None = None,
+    category: str | None = None,
+    db: Session = Depends(get_db),
+):
     query = db.query(Run)
     if model_id:
         query = query.filter(Run.model_id == model_id)
     if category:
         query = query.filter(Run.category == category)
     rows = query.order_by(desc(Run.id)).limit(min(max(limit, 1), 500)).all()
-    return {"data": [_serialize_run(r) for r in rows]}
+    return {"data": [serialize_run(r) for r in rows]}
+
+
+@app.delete("/api/history")
+def clear_history(db: Session = Depends(get_db)):
+    deleted_runs = db.query(Run).delete()
+    deleted_jobs = db.query(BenchmarkJob).delete()
+    db.commit()
+    return {"deleted_runs": deleted_runs, "deleted_jobs": deleted_jobs}
+
+
+# Optional static serving of built frontend dashboard when frontend/dist exists
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if (_FRONTEND_DIST / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="frontend-assets")
+
+
+@app.get("/", include_in_schema=False)
+def serve_frontend_root():
+    index_file = _FRONTEND_DIST / "index.html"
+    if index_file.is_file():
+        return FileResponse(str(index_file))
+    return {
+        "name": "ModelArena API",
+        "version": app.version,
+        "docs": "/docs",
+        "message": "Build o frontend (`cd frontend && npm run build`) ou rode `npm run dev` para abrir o dashboard.",
+    }
