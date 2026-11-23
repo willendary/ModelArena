@@ -21,6 +21,7 @@ import { RecommendationHero } from './components/RecommendationHero'
 import { RankingBoard } from './components/RankingBoard'
 import { RunDetailModal } from './components/RunDetailModal'
 import { SchedulePanel } from './components/SchedulePanel'
+import { FrontierComparison } from './components/FrontierComparison'
 
 const FALLBACK_CATEGORIES = [
   { id: 'reasoning', label: 'Raciocínio', task_count: 2 },
@@ -44,6 +45,7 @@ export function App() {
   const [ranking, setRanking] = useState([])
   const [rankingCat, setRankingCat] = useState('')
   const [recommendation, setRecommendation] = useState(null)
+  const [frontierData, setFrontierData] = useState(null)
   const [history, setHistory] = useState([])
   const [jobs, setJobs] = useState([])
   const [activeJob, setActiveJob] = useState(null)
@@ -83,15 +85,17 @@ export function App() {
 
   async function refreshData(catFilter = rankingCat) {
     try {
-      const [rk, rec, hist, jb, sched] = await Promise.all([
+      const [rk, rec, hist, jb, sched, frontier] = await Promise.all([
         api.ranking(catFilter),
         api.recommendation(),
         api.history({ limit: 150 }),
         api.listJobs(15),
         api.getSchedule(),
+        api.frontierComparison(),
       ])
       setRanking(rk.data || [])
       setRecommendation(rec)
+      setFrontierData(frontier)
       setHistory(hist.data || [])
       const jobList = jb.data || []
       setJobs(jobList)
@@ -321,6 +325,7 @@ export function App() {
       <nav>
         {[
           ['overview', 'Ranking & Benchmark'],
+          ['frontier', 'vs. Modelos de Ponta'],
           ['models', `Modelos (${filteredModels.length})`],
           ['history', `Histórico & Rubrica (${history.length})`],
           ['schedule', 'Execução Automática'],
@@ -489,6 +494,8 @@ export function App() {
           </section>
         </>
       )}
+
+      {tab === 'frontier' && <FrontierComparison data={frontierData} />}
 
       {tab === 'models' && (
         <section className="panel">

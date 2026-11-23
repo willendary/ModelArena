@@ -1,7 +1,7 @@
 import { connectHost, type HostReadyContext, type SessionSnapshot } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 
-type TabId = 'ranking' | 'run' | 'automation' | 'connection';
+type TabId = 'ranking' | 'frontier' | 'run' | 'automation' | 'connection';
 
 interface HealthPayload {
   status: string;
@@ -82,6 +82,27 @@ interface RunDetail extends RunSummary {
   } | null;
 }
 
+interface FrontierPayload {
+  updated_at: string;
+  metric_name: string;
+  frontier_leader: { name: string; score: number };
+  frontier_baselines: Array<{ id: string; name: string; family: string; swe_bench_verified: number }>;
+  nvidia_models: Array<{
+    model_id: string;
+    display_name: string;
+    params: string;
+    swe_bench_verified: number | null;
+    swe_bench_estimated: boolean;
+    gap_vs_frontier_pp: number | null;
+    relative_to_frontier_pct: number | null;
+    project_risk: string;
+    risk_label: string;
+    guidance: string;
+    local_composite_score: number | null;
+  }>;
+  methodology_note: string;
+}
+
 interface SchedulePayload {
   enabled: boolean;
   interval_minutes: number;
@@ -124,6 +145,7 @@ const state = {
   rankingCat: '',
   ranking: [] as RankingRow[],
   recommendation: null as RecommendationPayload | null,
+  frontier: null as FrontierPayload | null,
   activeJob: null as JobInfo | null,
   history: [] as RunSummary[],
   expandedRunId: null as number | null,
@@ -204,7 +226,7 @@ async function refreshAll(): Promise<void> {
         : `Backend conectado (${state.backendUrl}) · ${h.active_provider_label || 'NVIDIA NIM'} pronta.`
       : 'Backend conectado, mas nenhum provedor foi encontrado (verifique o OpenChamber ou configure NVIDIA_API_KEY).';
 
-    const [rk, rec, hist, jobsRes, sched] = await Promise.all([
+    const [rk, rec, hist, jobsRes, sched, frontier] = await Promise.all([
       serviceJson<{ data: RankingRow[] }>(
         'GET',
         state.rankingCat ? `/arena/ranking?category=${encodeURIComponent(state.rankingCat)}` : '/arena/ranking',
@@ -213,10 +235,12 @@ async function refreshAll(): Promise<void> {
       serviceJson<{ data: RunSummary[] }>('GET', '/arena/history?limit=40'),
       serviceJson<{ data: JobInfo[] }>('GET', '/arena/benchmarks/jobs?limit=5'),
       serviceJson<SchedulePayload>('GET', '/arena/schedule'),
+      serviceJson<FrontierPayload>('GET', '/arena/frontier-comparison').catch(() => null),
     ]);
 
     state.ranking = rk.data || [];
     state.recommendation = rec;
+    state.frontier = frontier;
     state.history = hist.data || [];
     state.schedule = sched;
     const running = (jobsRes.data || []).find((j) => j.status === 'running' || j.status === 'queued') || null;
@@ -461,6 +485,64 @@ function renderRankingTab(): string {
   `;
 }
 
+function renderFrontierTab(): string {
+  const f = state.frontier;
+  if (!f) {
+    return '<div class="ma-card"><p class="ma-subtitle">Atualize o backend para v1.2+ para ver o comparativo com modelos de ponta.</p></div>';
+  }
+  const baseRows = f.frontier_baselines
+    .map(
+      (b) => `
+      <div class="ma-rank-item">
+        <div class="ma-rank-body">
+          <div class="ma-row"><strong>${escapeHtml(b.name)}</strong><span class="ma-subtitle">${escapeHtml(b.family)}</span></div>
+          <div class="ma-bar"><i style="width:${b.swe_bench_verified}%;background:#6366f1"></i></div>
+        </div>
+        <div class="ma-score" style="color:#818cf8">${b.swe_bench_verified}%</div>
+      </div>`,
+    )
+    .join('');
+
+  const nvRows = f.nvidia_models
+    .map((m) => {
+      const sweLabel =
+        m.swe_bench_verified !== null ? `${m.swe_bench_estimated ? '~' : ''}${m.swe_bench_verified}%` : 'N/D';
+      const gapLabel = m.gap_vs_frontier_pp !== null ? `${m.gap_vs_frontier_pp} pts` : '—';
+      const barPct = m.swe_bench_verified ?? 10;
+      const barColor =
+        m.project_risk === 'baixo' ? '#76b900' : m.project_risk.startsWith('medio') ? '#f59e0b' : '#ef4444';
+      return `
+        <div class="ma-run-row" style="cursor:default">
+          <div class="ma-row">
+            <strong class="ma-mono" style="font-size:11px">${escapeHtml(m.model_id)}</strong>
+            <span class="ma-badge" style="border-color:${barColor};color:${barColor}">${escapeHtml(m.risk_label)}</span>
+          </div>
+          ${m.swe_bench_verified !== null ? `<div class="ma-bar"><i style="width:${barPct}%;background:${barColor}"></i></div>` : ''}
+          <div class="ma-meta">
+            <span>SWE-bench: <b>${sweLabel}</b></span>
+            <span>Gap topo: <b>${gapLabel}</b></span>
+            ${m.local_composite_score !== null ? `<span>Local: <b>${m.local_composite_score}/100</b></span>` : ''}
+          </div>
+          <div class="ma-subtitle">${escapeHtml(m.guidance)}</div>
+        </div>
+      `;
+    })
+    .join('');
+
+  return `
+    <div class="ma-card">
+      <div class="ma-badge">Referência Externa · ${escapeHtml(f.metric_name)} (${escapeHtml(f.updated_at)})</div>
+      <div class="ma-subtitle">${escapeHtml(f.methodology_note)}</div>
+      <strong style="margin-top:4px">Modelos de Ponta (Fronteira)</strong>
+      <div>${baseRows}</div>
+    </div>
+    <div class="ma-card">
+      <strong>Seus Modelos NVIDIA vs. Fronteira (${f.frontier_leader.score}%)</strong>
+      ${nvRows}
+    </div>
+  `;
+}
+
 function renderRunTab(): string {
   const q = state.search.trim().toLowerCase();
   const visible = state.models.filter((m) => {
@@ -651,6 +733,8 @@ function render(): void {
     body = renderOfflineCard();
   } else if (state.tab === 'ranking') {
     body = renderRankingTab();
+  } else if (state.tab === 'frontier') {
+    body = renderFrontierTab();
   } else if (state.tab === 'run') {
     body = renderRunTab();
   } else if (state.tab === 'automation') {
@@ -686,6 +770,7 @@ function render(): void {
       ${sessionBar}
       <nav class="ma-tabs">
         <button class="ma-tab ${state.tab === 'ranking' ? 'active' : ''}" data-action="tab" data-tab="ranking">Ranking</button>
+        <button class="ma-tab ${state.tab === 'frontier' ? 'active' : ''}" data-action="tab" data-tab="frontier">vs. Ponta</button>
         <button class="ma-tab ${state.tab === 'run' ? 'active' : ''}" data-action="tab" data-tab="run">Executar</button>
         <button class="ma-tab ${state.tab === 'automation' ? 'active' : ''}" data-action="tab" data-tab="automation">Automático</button>
         <button class="ma-tab ${state.tab === 'connection' ? 'active' : ''}" data-action="tab" data-tab="connection">Conexão</button>

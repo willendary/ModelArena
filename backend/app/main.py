@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from .benchmarks import get_tasks, list_categories
 from .config import settings
 from .db import SessionLocal, ensure_schema, get_db
+from .frontier_reference import build_frontier_comparison
 from .models import BenchmarkJob, Run
 from .provider import ProviderError
 from .provider_router import ProviderRouter
@@ -48,7 +49,7 @@ async def lifespan(_app: FastAPI):
         await engine_runner.stop_scheduler()
 
 
-app = FastAPI(title="ModelArena API", version="1.1.1", lifespan=lifespan)
+app = FastAPI(title="ModelArena API", version="1.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -253,6 +254,11 @@ def ranking(
 @app.get("/api/recommendation")
 def recommendation(db: Session = Depends(get_db)):
     return build_recommendation(db)
+
+
+@app.get("/api/frontier-comparison")
+def frontier_comparison(db: Session = Depends(get_db)):
+    return build_frontier_comparison(db)
 
 
 @app.get("/api/ranking/export")

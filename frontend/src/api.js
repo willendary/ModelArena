@@ -49,6 +49,7 @@ export const api = {
   cancelJob: (jobId) => request(`/api/benchmarks/jobs/${jobId}/cancel`, { method: 'POST' }),
   ranking: (category = '') => request(`/api/ranking${category ? `?category=${encodeURIComponent(category)}` : ''}`),
   recommendation: () => request('/api/recommendation'),
+  frontierComparison: () => request('/api/frontier-comparison'),
   exportMarkdown: async () => {
     const res = await fetch('/api/ranking/export?format=markdown')
     if (!res.ok) throw new Error('Falha ao exportar relatório Markdown')
