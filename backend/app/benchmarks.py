@@ -36,7 +36,7 @@ def deterministic_score(category: str, task_id: str, answer: str) -> float:
     lower = text.lower()
     checks = {
       "reasoning": ["ordem:", "a", "b", "c"],
-      "coding": ["normalize_email", "return", "sql"] if "sql" in task_id else ["normalize_email", "return", "lower"],
+      "coding": ["select", "left join", "count", "group by"] if "sql" in task_id else ["normalize_email", "return", "lower"],
       "debugging": ["causa:", "correção:", "none"],
       "delphi": ["stdcall", "parâmetros"],
       "csharp": ["async", "cancellationtoken", "trim"],

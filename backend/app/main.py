@@ -4,6 +4,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, case
+from .config import settings
 from .db import Base, engine, get_db
 from .models import Run
 from .schemas import BenchmarkRequest
@@ -11,14 +12,27 @@ from .provider import NVIDIAProvider
 from .benchmarks import get_tasks, deterministic_score
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="ModelArena API", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="ModelArena API", version="0.2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 provider = NVIDIAProvider()
-semaphore = asyncio.Semaphore(1)
+semaphore = asyncio.Semaphore(max(1, settings.max_concurrency))
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "provider": "nvidia"}
+    return {
+        "status": "ok",
+        "version": app.version,
+        "provider": "nvidia",
+        "nvidia_configured": settings.nvidia_configured,
+        "nvidia_base_url": settings.nvidia_base_url,
+        "max_concurrency": max(1, settings.max_concurrency),
+    }
 
 @app.get("/api/models")
 async def models():
